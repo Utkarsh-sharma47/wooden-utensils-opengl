@@ -1,0 +1,17 @@
+{
+  "scene": "single",
+  "opengl": "4.5 (Core Profile) Mesa 23.2.1-1ubuntu3.1~22.04.3",
+  "renderer": "llvmpipe (LLVM 15.0.7, 256 bits)",
+  "mesh_count": 3,
+  "triangles": 15650,
+  "resolution": [
+    1200,
+    1200
+  ],
+  "shadows": "PCF",
+  "lighting": "GGX direct light + analytic hemisphere fill, no HDRI",
+  "generated_meshes": true,
+  "wood_texture": "Poly Haven fine_grained_wood, CC0",
+  "tested_on_user_laptop": false,
+  "first_frame_seconds": 0.389
+}

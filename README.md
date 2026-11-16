@@ -43,6 +43,17 @@ python scene.py --width 720 --height 720
 python scene.py --tilt 4 --shadow hard
 ```
 
+## Single-spoon close-up
+
+A separate view keeps only one wooden spoon and the tabletop, with a closer camera. It does not remove the full scene:
+
+```sh
+python scene.py --scene single --tilt 3
+python scene.py --scene single --tilt 3 --render single-spoon.png
+```
+
+![Single spoon, actual OpenGL render](single-spoon.png)
+
 ## Render to PNG
 
 On Linux with EGL available, no desktop window is needed:
@@ -80,9 +91,9 @@ python -m unittest -v
 python tests/render_smoke.py
 ```
 
-The first command checks generated geometry and local assets without opening OpenGL. The second creates an EGL OpenGL context, renders both shadow modes, checks for a nonempty image and image differences, and saves results under `test-output/`.
+The first command checks generated geometry and local assets without opening OpenGL. The second creates an EGL OpenGL context, renders both shadow modes and the single-spoon view, checks for a nonempty image and image differences, and saves results under `test-output/`.
 
-Verified on Linux using Mesa llvmpipe software OpenGL 4.5: EGL renders and a three-frame GLFW window under Xvfb. Actual previews are `preview.png`, `oblique.png` and `hard-shadows.png`; renderer details are in `render-info.json`. The recorded first-frame time is **not sustained FPS** or a user-GPU benchmark. Windows, macOS and the user's laptop have not been tested.
+Verified on Linux using Mesa llvmpipe software OpenGL 4.5: EGL renders and a three-frame GLFW window under Xvfb. Actual previews are `preview.png`, `oblique.png`, `single-spoon.png` and `hard-shadows.png`; renderer details are in `render-info.json`. The recorded first-frame time is **not sustained FPS** or a user-GPU benchmark. Windows, macOS and the user's laptop have not been tested.
 
 If GLFW cannot open a display, run on a normal desktop session or use EGL on headless Linux. On Debian/Ubuntu, missing native libraries may require `sudo apt install libglfw3 libegl1 libgl1-mesa-dri`. A graphics-driver error is not fixed by reinstalling Python packages alone. macOS may require a separate GLFW installation such as `brew install glfw`.
 

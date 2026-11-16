@@ -20,6 +20,10 @@ class GeometryTest(unittest.TestCase):
                 self.assertGreaterEqual(mesh.f.min(), 0)
                 self.assertLess(mesh.f.max(), len(mesh.v))
 
+    def test_single_spoon(self):
+        meshes=scene.make_scene('single')
+        self.assertEqual({m.name for m in meshes}, {'beige tabletop','spoon handle','spoon head'})
+
     def test_wood_assets(self):
         for name in ['wood-color.jpg', 'wood-rough.jpg', 'wood-normal.jpg']:
             with Image.open(scene.ROOT / name) as im:

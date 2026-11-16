@@ -103,7 +103,7 @@ def sphere(name,center,radii,mat=1,seed=0,seg=24,rings=14):
 
 def plane():return Mesh('beige tabletop',[[-12,-12,0],[12,-12,0],[12,12,0],[-12,12,0]],[[0,1,2],[0,2,3]],1)
 
-def make_scene():
+def make_scene(scene_kind="full"):
     out=[plane()]
     # Positions are editable. Alternating directions follow the supplied image.
     kinds=['fork','spoon','spatula','ladle','turner','perforated']
@@ -203,6 +203,12 @@ def make_scene():
             yy=cy+(t-1)*.31;xx=cx+.08*(t-1)
             for side in [-1,1]:out.append(leaf(xx+side*.20,yy,(t*31+side*27),.19+.035*t))
     out.append(bowl('partial clay bowl',3.90,3.15,.58,.58,.05,.32,.07,2))
+    if scene_kind == 'single':
+        out=[o for o in out if o.name in ['beige tabletop','spoon handle','spoon head']]
+        for o in out:
+            if o.material==0:
+                o.model=transform(0,.15,0,-18)
+                o.model[:3,0]*=.80;o.model[:3,1]*=1.18
     return out
 
 VERT='''#version 330
@@ -291,14 +297,14 @@ void main(){
 '''
 
 class Renderer:
-    def __init__(self,ctx,width,height,shadow_mode=1):
+    def __init__(self,ctx,width,height,shadow_mode=1,scene_kind="full"):
         self.ctx=ctx;self.w=width;self.h=height;self.shadow_mode=shadow_mode
         self.prog=ctx.program(vertex_shader=VERT,fragment_shader=FRAG);self.sp=ctx.program(vertex_shader=SVERT,fragment_shader=SFRAG)
         self.wood=[]
         for i,name in enumerate(['wood-color.jpg','wood-rough.jpg','wood-normal.jpg']):
             im=Image.open(ROOT/name).convert('RGB').transpose(Image.Transpose.FLIP_TOP_BOTTOM)
             tex=ctx.texture(im.size,3,im.tobytes());tex.build_mipmaps();tex.filter=(moderngl.LINEAR_MIPMAP_LINEAR,moderngl.LINEAR);tex.anisotropy=min(8.,ctx.max_anisotropy);self.wood.append(tex)
-        self.objects=make_scene()
+        self.scene_kind=scene_kind;self.objects=make_scene(scene_kind)
         for m in self.objects:m.gpu(ctx,self.prog,self.sp)
         self.depth=ctx.depth_texture((2048,2048));self.depth.compare_func='';self.depth.repeat_x=False;self.depth.repeat_y=False
         self.sfb=ctx.framebuffer(depth_attachment=self.depth)
@@ -313,7 +319,7 @@ class Renderer:
     def render(self,tilt=0,exposure=1.0):
         eye=np.array([0.,-tilt,10.],dtype='f4');self.eye=eye
         # Square target with additional horizontal view on wide windows.
-        halfy=3.85;halfx=halfy*self.w/self.h
+        halfy=2.8 if self.scene_kind=='single' else 3.85;halfx=halfy*self.w/self.h
         vp=ortho(-halfx,halfx,-halfy,halfy,.1,30.)@look_at(eye,np.array([0.,0.,.1]),[0,1,0])
         self.sfb.use();self.ctx.viewport=(0,0,2048,2048);self.sfb.clear(depth=1.)
         self.sp['light_vp'].write(self.lv.T.astype('f4').tobytes())
@@ -330,15 +336,15 @@ class Renderer:
     def save(self,path):
         Image.frombytes('RGB',(self.w,self.h),self.fb.read(components=3,alignment=1)).transpose(Image.Transpose.FLIP_TOP_BOTTOM).save(path)
     def info(self):
-        return {'opengl':self.ctx.info['GL_VERSION'],'renderer':self.ctx.info['GL_RENDERER'],'mesh_count':len(self.objects),'triangles':sum(len(x.f) for x in self.objects),'resolution':[self.w,self.h],'shadows':'PCF' if self.shadow_mode else 'hard','lighting':'GGX direct light + analytic hemisphere fill, no HDRI','generated_meshes':True,'wood_texture':'Poly Haven fine_grained_wood, CC0','tested_on_user_laptop':False}
+        return {'scene':self.scene_kind,'opengl':self.ctx.info['GL_VERSION'],'renderer':self.ctx.info['GL_RENDERER'],'mesh_count':len(self.objects),'triangles':sum(len(x.f) for x in self.objects),'resolution':[self.w,self.h],'shadows':'PCF' if self.shadow_mode else 'hard','lighting':'GGX direct light + analytic hemisphere fill, no HDRI','generated_meshes':True,'wood_texture':'Poly Haven fine_grained_wood, CC0','tested_on_user_laptop':False}
 
 def main():
-    ap=argparse.ArgumentParser(description=__doc__);ap.add_argument('--render',metavar='PNG',help='Render one actual OpenGL frame and exit (EGL by default).');ap.add_argument('--backend',default='egl',choices=['egl','default']);ap.add_argument('--width',type=int,default=1200);ap.add_argument('--height',type=int,default=1200);ap.add_argument('--tilt',type=float,default=0,help='Oblique camera offset; try 4.');ap.add_argument('--shadow',choices=['hard','pcf'],default='pcf');ap.add_argument('--exposure',type=float,default=1.0);ap.add_argument('--stats',help='Write renderer details as JSON');ap.add_argument('--frames',type=int,default=0,help='Exit window after N frames (smoke testing).');args=ap.parse_args()
+    ap=argparse.ArgumentParser(description=__doc__);ap.add_argument('--render',metavar='PNG',help='Render one actual OpenGL frame and exit (EGL by default).');ap.add_argument('--backend',default='egl',choices=['egl','default']);ap.add_argument('--width',type=int,default=1200);ap.add_argument('--height',type=int,default=1200);ap.add_argument('--tilt',type=float,default=0,help='Oblique camera offset; try 4.');ap.add_argument('--shadow',choices=['hard','pcf'],default='pcf');ap.add_argument('--exposure',type=float,default=1.0);ap.add_argument('--stats',help='Write renderer details as JSON');ap.add_argument('--frames',type=int,default=0,help='Exit window after N frames (smoke testing).');ap.add_argument('--scene',choices=['full','single'],default='full',help='Full tabletop or one isolated wooden spoon.');args=ap.parse_args()
     if args.width<64 or args.height<64 or max(args.width,args.height)>4096:ap.error('width/height must be between 64 and 4096')
     if args.render:
         try:ctx=moderngl.create_standalone_context(require=330,**({'backend':'egl'} if args.backend=='egl' else {}))
         except Exception as e:raise SystemExit('Cannot create OpenGL 3.3 context. Try interactive mode with a working graphics driver or --backend default. Details: '+str(e))
-        r=Renderer(ctx,args.width,args.height,args.shadow=='pcf');start=time.perf_counter();r.render(args.tilt,args.exposure);ctx.finish();elapsed=time.perf_counter()-start;r.save(args.render);info=r.info();info['first_frame_seconds']=round(elapsed,3)
+        r=Renderer(ctx,args.width,args.height,args.shadow=='pcf',args.scene);start=time.perf_counter();r.render(args.tilt,args.exposure);ctx.finish();elapsed=time.perf_counter()-start;r.save(args.render);info=r.info();info['first_frame_seconds']=round(elapsed,3)
         print(json.dumps(info,indent=2));print('Saved:',args.render)
         if args.stats:Path(args.stats).write_text(json.dumps(info,indent=2)+'\n')
     else:
@@ -347,7 +353,7 @@ def main():
         glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR,3);glfw.window_hint(glfw.CONTEXT_VERSION_MINOR,3);glfw.window_hint(glfw.OPENGL_PROFILE,glfw.OPENGL_CORE_PROFILE);glfw.window_hint(glfw.OPENGL_FORWARD_COMPAT,True);glfw.window_hint(glfw.RESIZABLE,False)
         win=glfw.create_window(min(args.width,1000),min(args.height,1000),'Wooden Utensils | OpenGL | S shadows, T camera, P screenshot, Esc quit',None,None)
         if not win:glfw.terminate();raise SystemExit('OpenGL 3.3 window creation failed. Check the graphics driver.')
-        glfw.make_context_current(win);glfw.swap_interval(1);ctx=moderngl.create_context(require=330);w,h=glfw.get_framebuffer_size(win);r=Renderer(ctx,w,h,args.shadow=='pcf');state={'tilt':args.tilt}
+        glfw.make_context_current(win);glfw.swap_interval(1);ctx=moderngl.create_context(require=330);w,h=glfw.get_framebuffer_size(win);r=Renderer(ctx,w,h,args.shadow=='pcf',args.scene);state={'tilt':args.tilt}
         def key(win,key,scan,action,mods):
             if action!=glfw.PRESS:return
             if key==glfw.KEY_ESCAPE:glfw.set_window_should_close(win,True)

@@ -22,6 +22,11 @@ for mode in [0,1]:
     assert a.std()>10, 'Render is blank or almost uniform'
     images.append(a)
 assert np.abs(images[0]-images[1]).mean()>.01, 'Shadow modes did not differ'
+r=scene.Renderer(ctx,384,384,scene_kind='single')
+r.render(3)
+ctx.finish()
+r.save(out/'single.png')
+assert np.array(Image.open(out/'single.png')).std()>10
 print('PASS: OpenGL', ctx.info['GL_VERSION'])
 print('Renderer:', ctx.info['GL_RENDERER'])
 print('Actual render outputs:', out)
