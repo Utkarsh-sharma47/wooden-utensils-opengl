@@ -1,0 +1,10 @@
+{
+  "2048": {
+    "mean_ms": 17.35,
+    "method": "20 frames after 3 warmup, ctx.finish, AMD Radeon 660M hardware"
+  },
+  "4096": {
+    "mean_ms": 19.97,
+    "method": "20 frames after 3 warmup, ctx.finish, AMD Radeon 660M hardware"
+  }
+}

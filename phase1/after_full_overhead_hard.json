@@ -1,0 +1,20 @@
+{
+  "scene": "full",
+  "opengl": "4.6 (Core Profile) Mesa 25.2.8-0ubuntu0.24.04.4",
+  "renderer": "AMD Radeon 660M (radeonsi, rembrandt, LLVM 20.1.2, DRM 3.64, 7.0.0-38-generic)",
+  "mesh_count": 169,
+  "triangles": 171502,
+  "resolution": [
+    1000,
+    1000
+  ],
+  "shadows": "hard",
+  "shadow_map_size": 2048,
+  "pcf_kernel_radius": 2,
+  "pcf_texel_step": 1.15,
+  "lighting": "GGX direct light + analytic hemisphere fill, no HDRI",
+  "generated_meshes": true,
+  "wood_texture": "Poly Haven fine_grained_wood, CC0",
+  "tested_on_user_laptop": true,
+  "first_frame_seconds": 0.061
+}

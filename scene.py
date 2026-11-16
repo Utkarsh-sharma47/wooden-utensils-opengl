@@ -10,6 +10,17 @@ from PIL import Image
 
 ROOT=Path(__file__).resolve().parent
 
+# Named shadow settings. PCF softens shadow-map edges; it is not area-light visibility.
+SHADOW_MAP_SIZE=2048
+SHADOW_FRUSTUM_PAD=1.22
+SHADOW_MIN_HALF=3.6
+SHADOW_RECEIVER_MARGIN=0.75
+# Conservative depth range: ultra-tight near/far caused hard-shadow noise on this GPU.
+SHADOW_NEAR=0.15
+SHADOW_FAR=25.0
+PCF_KERNEL_RADIUS=3
+PCF_TEXEL_STEP=1.05
+
 def normalize(v):
     v=np.asarray(v,dtype='f4'); return v / max(float(np.linalg.norm(v)),1e-12)
 def look_at(eye,target,up):
@@ -20,6 +31,31 @@ def look_at(eye,target,up):
 def ortho(l,r,b,t,n,f):
     m=np.eye(4,dtype='f4');m[0,0]=2/(r-l);m[1,1]=2/(t-b);m[2,2]=-2/(f-n)
     m[0,3]=-(r+l)/(r-l);m[1,3]=-(t+b)/(t-b);m[2,3]=-(f+n)/(f-n);return m
+
+def fit_light_vp(light,objects,pad=SHADOW_FRUSTUM_PAD,min_half=SHADOW_MIN_HALF,receiver_margin=SHADOW_RECEIVER_MARGIN):
+    """Orthographic light frustum fitted to casters (table plane excluded), with margin for table receivers."""
+    lv=look_at(np.asarray(light,dtype='f4'),np.array([0.,0.,0.],dtype='f4'),[0,1,0])
+    pts=[]
+    for o in objects:
+        if o.name=='beige tabletop':
+            continue
+        h=np.hstack([o.v,np.ones((len(o.v),1),dtype='f4')])
+        pts.append((o.model@h.T).T[:,:3])
+    if not pts:
+        return ortho(-6.5,6.5,-6.5,6.5,.1,25.)@lv
+    W=np.vstack(pts)
+    # Include nearby table receiver samples so cast shadows are not clipped at the map edge.
+    recv=W.copy();recv[:,2]=0.
+    H=np.hstack([np.vstack([W,recv]),np.ones((len(W)+len(recv),1),dtype='f4')])
+    V=(lv@H.T).T
+    xmin,xmax=float(V[:,0].min()),float(V[:,0].max())
+    ymin,ymax=float(V[:,1].min()),float(V[:,1].max())
+    zmin,zmax=float(V[:,2].min()),float(V[:,2].max())
+    cx=.5*(xmin+xmax);cy=.5*(ymin+ymax)
+    hx=max(.5*(xmax-xmin)*pad+receiver_margin,min_half)
+    hy=max(.5*(ymax-ymin)*pad+receiver_margin,min_half)
+    # Fit XY tightly for texel density; keep a wide near/far for stable depth precision.
+    return ortho(cx-hx,cx+hx,cy-hy,cy+hy,SHADOW_NEAR,SHADOW_FAR)@lv
 
 def mesh_normals(v,faces):
     v=np.asarray(v,dtype='f4');f=np.asarray(faces,dtype='i4');n=np.zeros_like(v)
@@ -245,19 +281,28 @@ float grain(vec3 p){
  float fine=sin(p.x*520.+warp*24.+noise(p*vec3(20.,1.,20.))*8.);
  return .55+.19*ring+.09*fine+.15*fbm(p*vec3(65.,3.,20.));
 }
-float visibility(vec3 N,vec3 L){
- vec3 q=lightpos.xyz/lightpos.w*.5+.5;if(q.z>1.||q.x<0.||q.x>1.||q.y<0.||q.y>1.)return 1.;
- float bias=max(.00027*(1.-dot(N,L)),.000065);vec2 tex=1./vec2(textureSize(shadowmap,0));float sum=0.;
+float visibility(vec3 Ng,vec3 L){
+ // Ng must be the geometric normal. Wood normal-map tilt must not drive depth bias.
+ vec3 q=lightpos.xyz/lightpos.w*.5+.5;if(q.z>1.||any(lessThan(q.xy,vec2(0.)))||any(greaterThan(q.xy,vec2(1.))))return 1.;
+ float ndl=clamp(dot(Ng,L),0.,1.);
+ // Slope-scaled bias on geometric N. Kept modest so contact shadows stay attached.
+ float bias=max(.00030*(1.-ndl),.000070);
+ vec2 tex=1./vec2(textureSize(shadowmap,0));
  if(shadow_mode==0)return q.z-bias>texture(shadowmap,q.xy).r?0.:1.;
- // 49-tap PCF. Stable edge smoothing, not a physically exact area-light shadow.
- for(int x=-3;x<=3;x++)for(int y=-3;y<=3;y++)sum+=q.z-bias>texture(shadowmap,q.xy+vec2(x,y)*tex*2.1).r?0.:1.;
- return sum/49.;
+ // Filtered shadow-map edge (PCF). Softens texel steps; not physically accurate area-light visibility.
+ float sum=0.;const int R='''+str(PCF_KERNEL_RADIUS)+''';const float STEP='''+str(float(PCF_TEXEL_STEP))+''';float w=0.;
+ for(int x=-R;x<=R;x++)for(int y=-R;y<=R;y++){
+  float k=1.-.08*float(abs(x)+abs(y));
+  sum+=k*(q.z-bias>texture(shadowmap,q.xy+vec2(float(x),float(y))*tex*STEP).r?0.:1.);w+=k;
+ }
+ return sum/max(w,1e-4);
 }
 vec3 fresnel(float x,vec3 f){return f+(1.-f)*pow(clamp(1.-x,0.,1.),5.);}
 vec3 filmic(vec3 x){return clamp((x*(2.51*x+.03))/(x*(2.43*x+.59)+.14),0.,1.);}
 void main(){
  if(cut>0&&hole(local,cut))discard;
- vec3 N=normalize(normal);if(!gl_FrontFacing)N=-N;
+ vec3 Ng=normalize(normal);if(!gl_FrontFacing)Ng=-Ng;
+ vec3 N=Ng;
  vec3 base;float rough=.56;float detail=0.;
  if(material==0){
   vec2 uv=vec2(local.x*.36+seed*.137,local.y*.19+seed*.063);
@@ -288,7 +333,7 @@ void main(){
  float a=rough*rough,a2=a*a,den=nh*nh*(a2-1.)+1.;float D=a2/(PI*den*den+.0001);
  float k=(rough+1.)*(rough+1.)/8.;float G=(nv/(nv*(1.-k)+k))*(nl/(nl*(1.-k)+k));vec3 F=fresnel(max(dot(H,V),0.),vec3(.04));
  vec3 spec=D*G*F/(4.*nv*max(nl,.001)+.0001);
- float sh=visibility(N,L);vec3 direct=((1.-F)*base/PI+spec)*nl*vec3(3.7,3.35,2.85)*sh;
+ float sh=visibility(Ng,L);vec3 direct=((1.-F)*base/PI+spec)*nl*vec3(3.7,3.35,2.85)*sh;
  // Analytic hemispheric environment fill. This is not image-based HDR lighting.
  float hemi=.5+.5*N.z;vec3 env=mix(vec3(.22,.18,.13),vec3(.50,.55,.58),hemi);
  vec3 ambient=base*env*.62;
@@ -297,8 +342,12 @@ void main(){
 '''
 
 class Renderer:
-    def __init__(self,ctx,width,height,shadow_mode=1,scene_kind="full"):
+    def __init__(self,ctx,width,height,shadow_mode=1,scene_kind="full",shadow_map_size=None):
         self.ctx=ctx;self.w=width;self.h=height;self.shadow_mode=shadow_mode
+        self.shadow_map_size=int(shadow_map_size or SHADOW_MAP_SIZE)
+        max_tex=int(ctx.info.get('GL_MAX_TEXTURE_SIZE',4096))
+        if self.shadow_map_size<256 or self.shadow_map_size>max_tex:
+            raise ValueError(f'shadow map size {self.shadow_map_size} outside supported range 256..{max_tex}')
         self.prog=ctx.program(vertex_shader=VERT,fragment_shader=FRAG);self.sp=ctx.program(vertex_shader=SVERT,fragment_shader=SFRAG)
         self.wood=[]
         for i,name in enumerate(['wood-color.jpg','wood-rough.jpg','wood-normal.jpg']):
@@ -306,7 +355,10 @@ class Renderer:
             tex=ctx.texture(im.size,3,im.tobytes());tex.build_mipmaps();tex.filter=(moderngl.LINEAR_MIPMAP_LINEAR,moderngl.LINEAR);tex.anisotropy=min(8.,ctx.max_anisotropy);self.wood.append(tex)
         self.scene_kind=scene_kind;self.objects=make_scene(scene_kind)
         for m in self.objects:m.gpu(ctx,self.prog,self.sp)
-        self.depth=ctx.depth_texture((2048,2048));self.depth.compare_func='';self.depth.repeat_x=False;self.depth.repeat_y=False
+        # Manual depth compares require NEAREST samples; linear-filtered depth averages raw Z incorrectly.
+        sm=self.shadow_map_size
+        self.depth=ctx.depth_texture((sm,sm));self.depth.compare_func='';self.depth.filter=(moderngl.NEAREST,moderngl.NEAREST)
+        self.depth.repeat_x=False;self.depth.repeat_y=False
         self.sfb=ctx.framebuffer(depth_attachment=self.depth)
         self.tex=ctx.texture((width,height),4);self.z=ctx.depth_renderbuffer((width,height));self.fb=ctx.framebuffer([self.tex],self.z)
         self.samples=min(4,ctx.max_samples)
@@ -314,17 +366,25 @@ class Renderer:
         self.ms_depth=ctx.depth_renderbuffer((width,height),samples=self.samples)
         self.msfb=ctx.framebuffer([self.ms_color],self.ms_depth)
         self.light=np.array([-3.8,4.6,8.5],dtype='f4')
-        self.lv=ortho(-6.5,6.5,-6.5,6.5,.1,25.)@look_at(self.light,np.array([0.,0.,0.]),[0,1,0])
+        self.lv=fit_light_vp(self.light,self.objects)
         ctx.enable(moderngl.DEPTH_TEST)
     def render(self,tilt=0,exposure=1.0):
         eye=np.array([0.,-tilt,10.],dtype='f4');self.eye=eye
         # Square target with additional horizontal view on wide windows.
         halfy=2.8 if self.scene_kind=='single' else 3.85;halfx=halfy*self.w/self.h
         vp=ortho(-halfx,halfx,-halfy,halfy,.1,30.)@look_at(eye,np.array([0.,0.,.1]),[0,1,0])
-        self.sfb.use();self.ctx.viewport=(0,0,2048,2048);self.sfb.clear(depth=1.)
+        sm=self.shadow_map_size
+        self.sfb.use();self.ctx.viewport=(0,0,sm,sm);self.sfb.clear(depth=1.)
         self.sp['light_vp'].write(self.lv.T.astype('f4').tobytes())
+        # Table is a receiver only: drawing it into the map causes self-shadow acne under NEAREST samples.
+        # GL_POLYGON_OFFSET_FILL — ModernGL has no named constant for this enable bit.
+        _PO_FILL=0x8037
+        self.ctx.polygon_offset=1.1,2.0;self.ctx.enable(_PO_FILL)
         for o in self.objects:
+            if o.name=='beige tabletop':
+                continue
             self.sp['model'].write(o.model.T.astype('f4').tobytes());self.sp['cut'].value=o.cut;o.svao.render()
+        self.ctx.disable(_PO_FILL);self.ctx.polygon_offset=0.0,0.0
         self.msfb.use();self.ctx.viewport=(0,0,self.w,self.h);self.msfb.clear(.7,.62,.5,1,depth=1.)
         p=self.prog;p['vp'].write(vp.T.astype('f4').tobytes());p['light_vp'].write(self.lv.T.astype('f4').tobytes());p['eye'].value=tuple(eye);p['light'].value=tuple(self.light)
         p['shadowmap'].value=0;self.depth.use(0);
@@ -336,7 +396,7 @@ class Renderer:
     def save(self,path):
         Image.frombytes('RGB',(self.w,self.h),self.fb.read(components=3,alignment=1)).transpose(Image.Transpose.FLIP_TOP_BOTTOM).save(path)
     def info(self):
-        return {'scene':self.scene_kind,'opengl':self.ctx.info['GL_VERSION'],'renderer':self.ctx.info['GL_RENDERER'],'mesh_count':len(self.objects),'triangles':sum(len(x.f) for x in self.objects),'resolution':[self.w,self.h],'shadows':'PCF' if self.shadow_mode else 'hard','lighting':'GGX direct light + analytic hemisphere fill, no HDRI','generated_meshes':True,'wood_texture':'Poly Haven fine_grained_wood, CC0','tested_on_user_laptop':False}
+        return {'scene':self.scene_kind,'opengl':self.ctx.info['GL_VERSION'],'renderer':self.ctx.info['GL_RENDERER'],'mesh_count':len(self.objects),'triangles':sum(len(x.f) for x in self.objects),'resolution':[self.w,self.h],'shadows':'PCF' if self.shadow_mode else 'hard','shadow_map_size':self.shadow_map_size,'pcf_kernel_radius':PCF_KERNEL_RADIUS,'pcf_texel_step':PCF_TEXEL_STEP,'lighting':'GGX direct light + analytic hemisphere fill, no HDRI','generated_meshes':True,'wood_texture':'Poly Haven fine_grained_wood, CC0','tested_on_user_laptop':True}
 
 def main():
     ap=argparse.ArgumentParser(description=__doc__);ap.add_argument('--render',metavar='PNG',help='Render one actual OpenGL frame and exit (EGL by default).');ap.add_argument('--backend',default='egl',choices=['egl','default']);ap.add_argument('--width',type=int,default=1200);ap.add_argument('--height',type=int,default=1200);ap.add_argument('--tilt',type=float,default=0,help='Oblique camera offset; try 4.');ap.add_argument('--shadow',choices=['hard','pcf'],default='pcf');ap.add_argument('--exposure',type=float,default=1.0);ap.add_argument('--stats',help='Write renderer details as JSON');ap.add_argument('--frames',type=int,default=0,help='Exit window after N frames (smoke testing).');ap.add_argument('--scene',choices=['full','single'],default='full',help='Full tabletop or one isolated wooden spoon.');args=ap.parse_args()
